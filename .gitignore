@@ -1,0 +1,28 @@
+# Build output
+build/
+build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# Binaries / deployment artifacts
+*.dll
+*.exe
+*.pdb
+*.obj
+*.lib
+bin/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.kdev4
+*.user
+
+# Misc
+*.log
+Thumbs.db
+.DS_Store
