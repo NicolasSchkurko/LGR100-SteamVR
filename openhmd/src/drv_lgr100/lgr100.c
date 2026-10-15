@@ -303,9 +303,13 @@ static ohmd_device* open_device(ohmd_driver* driver, ohmd_device_desc* desc)
 	// and the pose/distortion path while rendering (black eye under load).
 	hid_set_nonblocking(priv->handle, 1);
 
-// Activation commands. Both use the {3, 12} prefix: the reference implementation
-	// (LG360VRActivator, github.com/bauermaximilian/LG-360-VR-for-PC) sends
-	// "Sleep Disable" with the same 0x0C prefix as "VR App Start", not 0x0D.
+// Activation commands. The second byte of an LGR100 command report is the
+	// *length* of the command text: the firmware terminates the received string
+	// at that byte before matching it, so a value smaller than strlen() makes
+	// the command silently not match (verified 2026-10-15: "Sleep Disable" is
+	// 13 chars and only runs with 0x0D; with 0x0C it is ignored). The reference
+	// implementation (LG360VRActivator) sends "Sleep Disable" with 0x0C, which
+	// never did anything - the panel came up because "VR App Start" is correct.
 	// Without these the left panel stays dark.
 	//
 	// Two things matter here and both were wrong before:
@@ -318,7 +322,7 @@ static ohmd_device* open_device(ohmd_driver* driver, ohmd_device_desc* desc)
 	//    breaking the connection.
 	//  - Overall time is bounded, so a slow device can never stall driver init.
 	{
-		unsigned char cmd_sleep[15] = {0x03, 0x0C, 'S','l','e','e','p',' ','D','i','s','a','b','l','e'};
+		unsigned char cmd_sleep[15] = {0x03, 0x0D, 'S','l','e','e','p',' ','D','i','s','a','b','l','e'};
 		unsigned char cmd_start[14] = {0x03, 0x0C, 'V','R',' ','A','p','p',' ','S','t','a','r','t'};
 
 		unsigned char drain_buf[FEATURE_BUFFER_SIZE];
