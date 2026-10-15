@@ -28,16 +28,18 @@ Experimental SteamVR driver that turns the **LG 360 VR (R100 / R105)** — an An
 
 ## Building (Windows)
 
-Prerequisites: MSVC + CMake, SteamVR installed, and the OpenHMD sources (branch `LG-R100-rebased`) in `subprojects/openhmd`.
+Prerequisites: MSVC + CMake, SteamVR installed, and a [hidapi](https://github.com/libusb/hidapi) build (headers + import library). The OpenHMD subset the driver needs is vendored under `openhmd/`; nothing else is required.
 
 ```powershell
-cmake -S . -B build
+cmake -S . -B build `
+  -DHIDAPI_INCLUDE_DIR=<hidapi>\include `
+  -DHIDAPI_LIBRARY=<hidapi>\x64\hidapi.lib
 cmake --build build --config Release --target driver_openhmd
 ```
 
 Deploy with SteamVR fully closed: copy `build\Release\driver_openhmd.dll` next to `hidapi.dll` in the deployed driver folder.
 
-> The driver source from the parent projects is being imported into this repository in follow-up commits; this initial commit is the project scaffold (README + license).
+> Repository layout: `driver_openhmd.cpp`, `driverlog.*` and `ohmd_config.h` are the SteamVR plugin (from [SteamVR-OpenHMD](https://github.com/ChristophHaag/SteamVR-OpenHMD)); `openhmd/` is the frozen OpenHMD subset (Phase 0) and `openvr/` vendors Valve's `openvr_driver.h`. `build/` output and binaries are git-ignored.
 
 ## Credits & license
 
