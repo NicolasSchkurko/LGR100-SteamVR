@@ -1,4 +1,4 @@
-// Copyright 2018, Joey Ferwerda.
+﻿// Copyright 2018, Joey Ferwerda.
 // SPDX-License-Identifier: BSL-1.0
 /*
  * OpenHMD - Free and Open Source API and drivers for immersive technology.
@@ -20,6 +20,7 @@ typedef struct {
 	int id;
 
 	int controller_values[2];
+	int proximity_present;  // 1 when the proximity sensor sees something
 	lgr100_sensor_sample sample;
 	fusion sensor_fusion;
 	vec3f raw_accel, raw_gyro;
@@ -27,6 +28,15 @@ typedef struct {
 	int bias_count;       // samples averaged for the bias estimate
 	int bias_ready;       // once bias is measured, keep updating it while still
 } lgr100_priv;
+
+// Continuous tracking of the gyro bias while the visor sits still.
+//
+// OFF by default: the bias is measured once at startup and re-measured only
+// when the user asks for it (the OK button on the visor, which triggers
+// OHMD_LGR100_RECALIBRATE). The automatic tracking used to creep toward the
+// actual motion whenever the head moved slowly, which silently cancelled
+// part of the rotation. Set to 1 to get the old behaviour back.
+#define LGR100_BIAS_AUTOTRACK 0
 
 #define TICK_LEN (1.0f / 374325.0f) // measured tick rate (1872 ticks / 5.001 ms sample)
 #define TICK_FALLBACK 1872          // one nominal 200 Hz sample
@@ -128,11 +138,28 @@ static void update_gyro_bias(lgr100_priv* priv, const float* raw)
 	// Only track the bias while the device is genuinely still. The threshold has
 	// to sit well below a slow head turn (~0.5 rad/s), otherwise the estimate
 	// creeps toward the actual motion and cancels the rotation out.
+#if LGR100_BIAS_AUTOTRACK
 	if(mag < 0.04f){
 		priv->gyro_bias.x += (gx - priv->gyro_bias.x) * 0.002f;
 		priv->gyro_bias.y += (gy - priv->gyro_bias.y) * 0.002f;
 		priv->gyro_bias.z += (gz - priv->gyro_bias.z) * 0.002f;
 	}
+#else
+	(void)mag;
+#endif
+}
+
+// Restart the gyro bias estimation. The next samples are averaged again, so
+// the calibration can be redone on demand: hold the visor still and press the
+// OK button. Returns nothing; the new estimate is ready ~1 s later.
+static void lgr100_recalibrate(lgr100_priv* priv)
+{
+	priv->bias_ready = 0;
+	priv->bias_count = 0;
+	priv->gyro_bias.x = 0.0f;
+	priv->gyro_bias.y = 0.0f;
+	priv->gyro_bias.z = 0.0f;
+	LOGD("lgr100 gyro recalibration requested");
 }
 
 static void handle_tracker_sensor_msg(lgr100_priv* priv, unsigned char* buffer, int size)
@@ -192,7 +219,7 @@ static void update_device(ohmd_device* device)
 
 		//NULL package
 		if(buffer[0] == LGR100_IRQ_NULL) {
-			return;
+			continue;
 		}
 		else if(buffer[0] == LGR100_IRQ_BUTTONS){
 			//button 'OK' is buffer[1] state 01 and 04
@@ -216,15 +243,26 @@ static void update_device(ohmd_device* device)
 			//printf("%s\n", buffer);
 		}
 		else if(buffer[0] == LGR100_IRQ_SENSORS) {
+			// Keep reading instead of returning. The IMU stream is 200 Hz and
+			// always pending, so returning on the first IMU report aborted the
+			// loop before the queued button and proximity reports were ever
+			// read (the buttons only worked when their report happened to be
+			// the first one in the queue). The loop is still bounded at 64
+			// messages and every read is non-blocking.
 			handle_tracker_sensor_msg(priv, buffer, size);
-			return;
+			continue;
 		}
 		else if (buffer[0] == LGR100_IRQ_UNKNOWN1) {
-			// prints different data based on if there is anything in front of the proximity sensor
-			// Example prox on
-			// 01:07:00:40:BD:97:B1:D1:3B:BD:72:2E:BC:CD:EC:53:BF:33:47:19:41:66:22:17:C0:82:AC:C9:00:02:00:00
-			// Example prox off
-			// 01:07:05:14:3D:97:B1:D1:3B:3A:85:0B:BC:9A:59:4B:BF:9A:28:1A:41:9A:E1:1B:C0:99:41:B4:E2:02:00:00
+			// Proximity sensor report. The payload differs depending on whether
+			// something is in front of the sensor:
+			//   prox on  : 01:07:00:40:BD:97:B1:D1:3B:BD:72:2E:BC:CD:EC:53:BF:33:47:19:41:66:22:17:C0:82:AC:C9:00:02:00:00
+			//   prox off : 01:07:05:14:3D:97:B1:D1:3B:3A:85:0B:BC:9A:59:4B:BF:9A:28:1A:41:9A:E1:1B:C0:99:41:B4:E2:02:00:00
+			// The byte that actually carries the state is byte 3: 0x00 when
+			// something is in front, 0x14 when there is nothing. The visor uses
+			// the same sensor to turn the panels off when it is not worn.
+			if(size >= 4){
+				priv->proximity_present = (buffer[2] == 0x00) ? 1 : 0;
+			}
 		}
 		else if (buffer[0] == LGR100_IRQ_UNKNOWN2) {
 			// prints
@@ -239,6 +277,9 @@ static void update_device(ohmd_device* device)
 		}
 	}
 }
+
+// Defined further down, next to the open_device() code it was extracted from.
+static int lgr100_activate_panels(lgr100_priv* priv, ohmd_context* ctx);
 
 static int getf(ohmd_device* device, ohmd_float_value type, float* out)
 {
@@ -265,6 +306,23 @@ static int getf(ohmd_device* device, ohmd_float_value type, float* out)
 		}
 		break;
 
+	// Commands, not getters. The LGR100 driver has no setf (device->setf is
+	// NULL), so they are triggered through getf; both run under OpenHMD's
+	// update mutex, which is what makes the hid_write inside the activation
+	// sequence safe.
+	case OHMD_LGR100_RECALIBRATE:
+		lgr100_recalibrate(priv);
+		out[0] = 1.0f;
+		break;
+
+	case OHMD_LGR100_ACTIVATE:
+		out[0] = (float)lgr100_activate_panels(priv, priv->base.ctx);
+		break;
+
+	case OHMD_LGR100_USER_PRESENT:
+		out[0] = (float)priv->proximity_present;
+		break;
+
 	default:
 		ohmd_set_error(priv->base.ctx, "invalid type given to getf (%ud)", type);
 		return OHMD_S_INVALID_PARAMETER;
@@ -278,6 +336,73 @@ static void close_device(ohmd_device* device)
 {
 	LOGD("closing lgr100 device");
 	free(device);
+}
+
+// Activation commands. The second byte of an LGR100 command report is the
+// *length* of the command text: the firmware terminates the received string
+// at that byte before matching it, so a value smaller than strlen() makes the
+// command silently not match (verified 2026-10-15: "Sleep Disable" is 13 chars
+// and only runs with 0x0D; with 0x0C it is ignored). The reference
+// implementation (LG360VRActivator) sends "Sleep Disable" with 0x0C, which
+// never did anything - the panel came up because "VR App Start" is correct.
+// Without these the left panel stays dark.
+//
+// Two things matter here and both were wrong before:
+//  - The drain must stop on a read *timeout*, not on an empty read, and it
+//    must not spin. With the headset awake the 200 Hz IMU stream never runs
+//    dry, so the old `break` on `<= 0` never fired and the loop drained a
+//    fixed count every time, stalling the driver long enough to trip SteamVR's
+//    watchdog. That made the panels come up or not depending purely on whether
+//    the headset happened to be asleep, which looked like an unrelated setting
+//    breaking the connection.
+//  - Overall time is bounded, so a slow device can never stall driver init.
+//
+// This runs under OpenHMD's update mutex (both from open_device and from the
+// OHMD_LGR100_ACTIVATE command), so the hid_write never races with the read
+// that the update thread has in flight.
+static int lgr100_activate_panels(lgr100_priv* priv, ohmd_context* ctx)
+{
+	unsigned char cmd_sleep[15] = {0x03, 0x0D, 'S','l','e','e','p',' ','D','i','s','a','b','l','e'};
+	unsigned char cmd_start[14] = {0x03, 0x0C, 'V','R',' ','A','p','p',' ','S','t','a','r','t'};
+
+	unsigned char drain_buf[FEATURE_BUFFER_SIZE];
+	int ok = 0;
+
+	// Retry, bounded. Any other process holding the HID (the reference
+	// LG360VRActivator is the usual culprit) can make a write fail, and
+	// without both commands the LEFT panel stays dark while the right one
+	// still comes up - which presents exactly like a rendering bug in the
+	// driver. Total time is bounded so driver init cannot trip SteamVR's
+	// watchdog.
+	for(int attempt = 0; attempt < 5 && !ok; attempt++)
+	{
+		DWORD deadline = GetTickCount() + 50;   // at most 50 ms of draining
+
+		for(int d = 0; d < 64 && GetTickCount() < deadline; d++){
+			int n = hid_read_timeout(priv->handle, drain_buf, FEATURE_BUFFER_SIZE, 5);
+			if(n < 0)
+				break;                           // real error, stop
+			if(n == 0)
+				continue;                        // nothing pending, keep trying
+		}
+
+		if(hid_write(priv->handle, cmd_sleep, sizeof(cmd_sleep)) > 0 &&
+		   hid_write(priv->handle, cmd_start, sizeof(cmd_start)) > 0)
+			ok = 1;
+		else if(attempt + 1 < 5)
+			Sleep(100);
+	}
+
+	// Report through the OpenHMD error string, not LOGD. OpenHMD's logging is
+	// printf to stdout, which SteamVR never captures, so the driver had no
+	// visibility at all into whether the panels were actually activated.
+	// ohmd_ctx_get_error() does reach vrserver.txt.
+	if(ok)
+		LOGD("lgr100 activation commands sent");
+	else
+		ohmd_set_error(ctx, "lgr100 activation command failed (hid_write rejected, is another process holding the HID?); panels rely on proximity sensor and the left panel may stay dark");
+
+	return ok;
 }
 
 static ohmd_device* open_device(ohmd_driver* driver, ohmd_device_desc* desc)
@@ -322,45 +447,10 @@ static ohmd_device* open_device(ohmd_driver* driver, ohmd_device_desc* desc)
 	//    breaking the connection.
 	//  - Overall time is bounded, so a slow device can never stall driver init.
 	{
-		unsigned char cmd_sleep[15] = {0x03, 0x0D, 'S','l','e','e','p',' ','D','i','s','a','b','l','e'};
-		unsigned char cmd_start[14] = {0x03, 0x0C, 'V','R',' ','A','p','p',' ','S','t','a','r','t'};
-
-		unsigned char drain_buf[FEATURE_BUFFER_SIZE];
-		int ok = 0;
-
-		// Retry, bounded. Any other process holding the HID (the reference
-		// LG360VRActivator is the usual culprit) can make a write fail, and
-		// without both commands the LEFT panel stays dark while the right one
-		// still comes up - which presents exactly like a rendering bug in the
-		// driver. Total time is bounded so driver init cannot trip SteamVR's
-		// watchdog.
-		for(int attempt = 0; attempt < 5 && !ok; attempt++)
-		{
-			DWORD deadline = GetTickCount() + 50;   // at most 50 ms of draining
-
-			for(int d = 0; d < 64 && GetTickCount() < deadline; d++){
-				int n = hid_read_timeout(priv->handle, drain_buf, FEATURE_BUFFER_SIZE, 5);
-				if(n < 0)
-					break;                           // real error, stop
-				if(n == 0)
-					continue;                        // nothing pending, keep trying
-			}
-
-			if(hid_write(priv->handle, cmd_sleep, sizeof(cmd_sleep)) > 0 &&
-			   hid_write(priv->handle, cmd_start, sizeof(cmd_start)) > 0)
-				ok = 1;
-			else if(attempt + 1 < 5)
-				Sleep(100);
-		}
-
-		// Report through the OpenHMD error string, not LOGD. OpenHMD's logging is
-		// printf to stdout, which SteamVR never captures, so the driver had no
-		// visibility at all into whether the panels were actually activated.
-		// ohmd_ctx_get_error() does reach vrserver.txt.
-		if(ok)
-			LOGD("lgr100 activation commands sent");
-		else
-			ohmd_set_error(driver->ctx, "lgr100 activation command failed (hid_write rejected, is another process holding the HID?); panels rely on proximity sensor and the left panel may stay dark");
+		// The activation sequence now lives in lgr100_activate_panels() so it
+		// can also be triggered on demand from the SteamVR driver (the BACK
+		// button on the visor re-lights the panels without a replug).
+		lgr100_activate_panels(priv, driver->ctx);
 	}
 		
 	// Set default device properties
