@@ -76,6 +76,7 @@ private:
 	void processReport(const unsigned char* buffer, int size);
 	void handleSensorMessage(const unsigned char* buffer, int size);
 	void updateGyroBias(const float* raw);
+	bool openHandle();
 	bool sendActivation();
 
 	hid_device* m_handle;
