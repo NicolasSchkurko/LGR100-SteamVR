@@ -9,12 +9,11 @@ set(CMAKE_C_STANDARD 99)
 file(COPY driver.vrdrivermanifest DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY resources DESTINATION ${CMAKE_BINARY_DIR})
 
-# hidapi: lives in the project's third_party, next to the other vendored
-# dependencies (the tools use ../../third_party/openvr the same way). A copy
-# inside the repo also works, so the driver can be built standalone.
-set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/hidapi")
+# hidapi: vendored under third_party/, so the driver builds with nothing
+# else installed.
+set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hidapi")
 if(NOT EXISTS "${HIDAPI_ROOT}/include/hidapi.h")
-    set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hidapi")
+    set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/hidapi")
 endif()
 find_path(HIDAPI_INCLUDE_DIR hidapi.h PATHS "${HIDAPI_ROOT}/include" NO_DEFAULT_PATH)
 find_library(HIDAPI_LIBRARY hidapi PATHS "${HIDAPI_ROOT}/x64" NO_DEFAULT_PATH)
@@ -39,12 +38,12 @@ add_library(lgr100_standalone STATIC
 target_include_directories(lgr100_standalone PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/standalone)
 target_link_libraries(lgr100_standalone ${HIDAPI_LIBRARIES})
 
-# openvr_driver.h (Valve's OpenVR SDK header, the server side). It lives in the
-# project's third_party, next to the client half of the SDK (openvr.h and
+# openvr_driver.h (Valve's OpenVR SDK header, the server side). It lives in
+# third_party/, next to the client half of the SDK (openvr.h and
 # openvr_api.lib) that the tools use.
-set(OPENVR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/openvr")
+set(OPENVR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openvr")
 if(NOT EXISTS "${OPENVR_ROOT}/openvr_driver.h")
-    set(OPENVR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/openvr")
+    set(OPENVR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/openvr")
 endif()
 include_directories("${OPENVR_ROOT}")
 
