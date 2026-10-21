@@ -26,6 +26,21 @@
 using namespace vr;
 
 
+// Per-eye statistics for ComputeDistortion, used to hunt the intermittent black
+// left eye. One instance per eye, so the two eyes can be compared call by call.
+struct DistortStats
+{
+    unsigned long long calls;
+    unsigned long long lastCalls;
+    unsigned long long oor;
+    unsigned long long lastTick;
+    float inMinU, inMaxU;
+    float inMinV, inMaxV;
+    float outMinU, outMaxU;
+    float outMinV, outMaxV;
+};
+
+
 // True when a monitor of the headset panel size (1440x960) is present in the
 // Windows display topology.
 static BOOL CALLBACK findHeadsetMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data)
@@ -668,6 +683,16 @@ public:
         vr::VRProperties()->SetFloatProperty( m_ulPropertyContainer, Prop_DisplayFrequency_Float, m_flDisplayFrequency );
         vr::VRProperties()->SetFloatProperty( m_ulPropertyContainer, Prop_SecondsFromVsyncToPhotons_Float, m_flSecondsFromVsyncToPhotons );
 
+        // The HMD needs its own input profile. Without it SteamVR looks for a
+        // controller type named "openhmd_hmd", does not find it, and every
+        // binding load for this device fails ("openhmd_hmd has no configured
+        // binding"). The Steam client then retries the binding load in a hot
+        // loop (~48 times per minute), the input system never settles, the HMD
+        // is never considered ready and SteamVR parks it in standby - which
+        // leaves the headset window black.
+        vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_ControllerType_String, "openhmd_hmd" );
+        vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_InputProfilePath_String, "{openhmd}/input/openhmd_hmd_profile.json" );
+
         // Reverted: setting Prop_EdidVendorID_Int32 / Prop_EdidProductID_Int32 here
         // did not clear "Found bad mirror window settings" and it left only one eye
         // rendering. The compositor keeps timing out on the panel EDID either way,
@@ -952,7 +977,13 @@ public:
     DistortionCoordinates_t ComputeDistortion( EVREye eEye, float fU, float fV )
     {
         float angle = (eEye == Eye_Left ? m_flRotationLeft : m_flRotationRight);
-        
+
+        // Coordinates exactly as SteamVR handed them to us, before the +/-90
+        // rotation and the vertical centring below. Kept for the per-eye
+        // instrumentation at the end of this function.
+        const float inU = fU;
+        const float inV = fV;
+
         //DriverLog("Eye %d before: %f %f\n", eEye, fU, fV);
                 
         // Texture scale and per-eye offset for the LGR100 panel, taken from the
@@ -1138,6 +1169,68 @@ public:
         // Clamp to the render target: anything outside [0,1] samples black, and
         // the small vertical centring below can push the top row slightly past
         // 1.0. Clamping turns a potential black stripe/eye into edge pixels.
+        //
+        // NOTE for the black-eye hunt: because of this clamp the driver can never
+        // hand the compositor an out-of-range coordinate. That rules out "the
+        // driver returned a bad texcoord" as the cause of the black left eye and
+        // moves the suspicion to the input side (SteamVR asking for a degenerate
+        // eye) or to the compositor (dropped submission / mirror window).
+        // The counters below capture exactly that, per eye.
+        {
+            const int slot = (eEye == Eye_Left) ? 0 : 1;
+            static DistortStats st[2];
+            DistortStats &s = st[slot];
+
+            s.calls++;
+            const float tu = tc_r[0];
+            const float tv = tc_r[1];
+
+            if (tu < s.outMinU) s.outMinU = tu;
+            if (tu > s.outMaxU) s.outMaxU = tu;
+            if (tv < s.outMinV) s.outMinV = tv;
+            if (tv > s.outMaxV) s.outMaxV = tv;
+
+            if (inU < s.inMinU) s.inMinU = inU;
+            if (inU > s.inMaxU) s.inMaxU = inU;
+            if (inV < s.inMinV) s.inMinV = inV;
+            if (inV > s.inMaxV) s.inMaxV = inV;
+
+            // Out-of-range before the clamp: the vertical centring pushes the top
+            // row slightly past 1.0, which is expected and harmless. Anything
+            // beyond that is a real bug, so it is logged separately.
+            const bool oor = (tu < -0.0001f || tu > 1.0001f || tv < -0.0001f || tv > 1.0001f);
+            if (oor)
+            {
+                s.oor++;
+                if (s.oor <= 20)
+                {
+                    DriverLog("EYEOOR %s n=%llu in=(%.4f,%.4f) out=(%.4f,%.4f) rot=%.1f\n",
+                              (eEye == Eye_Left) ? "LEFT " : "RIGHT",
+                              s.oor, inU, inV, tu, tv, angle);
+                }
+            }
+
+            // One summary line per eye per second: the timeline in vrserver.txt
+            // can then be correlated with the moment the eye actually goes black.
+            const unsigned long long now = (unsigned long long)GetTickCount64();
+            if (now - s.lastTick >= 1000)
+            {
+                s.lastTick = now;
+                const unsigned long long perSec = s.calls - s.lastCalls;
+                s.lastCalls = s.calls;
+                DriverLog("EYESTATS %s calls=%llu/s inU=[%.3f..%.3f] inV=[%.3f..%.3f] outU=[%.3f..%.3f] outV=[%.3f..%.3f] oor=%llu\n",
+                          (eEye == Eye_Left) ? "LEFT " : "RIGHT",
+                          perSec,
+                          s.inMinU, s.inMaxU, s.inMinV, s.inMaxV,
+                          s.outMinU, s.outMaxU, s.outMinV, s.outMaxV,
+                          s.oor);
+                s.inMinU = 1e30f; s.inMaxU = -1e30f;
+                s.inMinV = 1e30f; s.inMaxV = -1e30f;
+                s.outMinU = 1e30f; s.outMaxU = -1e30f;
+                s.outMinV = 1e30f; s.outMaxV = -1e30f;
+            }
+        }
+
         coordinates.rfBlue[0] = clamp01(tc_b[0]);
         coordinates.rfBlue[1] = clamp01(tc_b[1]);
         coordinates.rfGreen[0] = clamp01(tc_g[0]);
@@ -1163,10 +1256,129 @@ public:
 
         float quat[4];
         ohmd_device_getf(d, OHMD_ROTATION_QUAT, quat);
-        pose.qRotation.x = quat[0];
-        pose.qRotation.y = quat[1];
-        pose.qRotation.z = quat[2];
-        pose.qRotation.w = quat[3];
+
+        // Headset buttons. They arrive in HID report ID 2 and are parsed by the
+        // LGR100 driver inside OpenHMD, which exposes them through
+        // OHMD_CONTROLS_STATE as [OK, BACK]. Nothing read them until now, so
+        // the physical buttons of the visor were dead as far as SteamVR was
+        // concerned.
+        float controls[2] = { 0.0f, 0.0f };
+        if (hmd)
+        {
+            ohmd_device_getf(hmd, OHMD_CONTROLS_STATE, controls);
+        }
+
+        // Proximity sensor (HID report ID 1): 1 when something is in front of
+        // it, i.e. the headset is being worn. The visor uses the same sensor
+        // to turn the panels off when it is not worn, and SteamVR uses it to
+        // decide whether the headset is in use. Logged on every change so the
+        // state can be correlated with the standby entries in the log.
+        if (hmd)
+        {
+            float present = 0.0f;
+            ohmd_device_getf(hmd, OHMD_LGR100_USER_PRESENT, &present);
+            const bool nowPresent = present > 0.5f;
+            if (nowPresent != m_bProximityPresent)
+            {
+                m_bProximityPresent = nowPresent;
+                DriverLog("PROXIMITY: %s\n", nowPresent ? "present (visor in use)" : "absent (nothing in front)");
+            }
+        }
+
+        const bool okDown = controls[0] > 0.5f;
+        const bool backDown = controls[1] > 0.5f;
+
+        if (okDown && !m_bButtonOkDown)
+        {
+            // OK: re-measure the gyro bias and make this direction the new
+            // origin. The bias is captured again from the next ~200 samples
+            // (about 1 s at 200 Hz), so the visor has to be held still for a
+            // moment. This is the on-demand "stabilise" the automatic bias
+            // tracking used to do continuously.
+            float trigger = 0.0f;
+            if (hmd)
+            {
+                ohmd_device_getf(hmd, OHMD_LGR100_RECALIBRATE, &trigger);
+            }
+
+            m_recenterRef[0] = quat[0];
+            m_recenterRef[1] = quat[1];
+            m_recenterRef[2] = quat[2];
+            m_recenterRef[3] = quat[3];
+            m_bHasRecenter = true;
+
+            DriverLog("BUTTON OK: gyro recalibration requested (ret=%d) + recentered to quat %.4f %.4f %.4f %.4f\n",
+                      (int)trigger, quat[0], quat[1], quat[2], quat[3]);
+        }
+
+        if (backDown && !m_bButtonBackDown)
+        {
+            // BACK: re-send the panel activation commands ("Sleep Disable" +
+            // "VR App Start"). That is the software equivalent of the
+            // activation sequence: it lights the panels up again when they went
+            // to sleep, without unplugging the USB-C.
+            float result = 0.0f;
+            if (hmd)
+            {
+                ohmd_device_getf(hmd, OHMD_LGR100_ACTIVATE, &result);
+            }
+            DriverLog("BUTTON BACK: panel activation commands re-sent (ok=%d)\n", (int)result);
+        }
+
+        m_bButtonOkDown = okDown;
+        m_bButtonBackDown = backDown;
+
+        float rquat[4];
+        if (m_bHasRecenter)
+        {
+            // q' = conj(ref) * q. The orientation captured at the last recenter
+            // becomes "forward" again, so the yaw that drifted since then is
+            // cancelled while every movement after it is preserved.
+            applyRecenter(m_recenterRef, quat, rquat);
+        }
+        else
+        {
+            memcpy(rquat, quat, sizeof(rquat));
+        }
+
+        // Report the angular velocity of the head.
+        //
+        // The pose was always posted with a zero velocity, which makes the
+        // device look permanently still: SteamVR decides whether the headset
+        // is in use from the reported motion, and a device that never moves
+        // gets parked in standby (the mirror window then goes black). The
+        // velocity is derived from the rotation between the last two poses.
+        {
+            const unsigned long long now = (unsigned long long)GetTickCount64();
+            float dt = (float)(now - m_lastPoseTick) / 1000.0f;
+            if (dt <= 0.0f || dt > 1.0f)
+            {
+                dt = 1.0f / 90.0f;   // first sample or a long stall: assume 90 Hz
+            }
+            computeAngularVelocity(m_prevQuat, quat, dt, m_angularVelocity);
+            memcpy(m_prevQuat, quat, sizeof(m_prevQuat));
+            m_lastPoseTick = now;
+
+            if (now - m_lastVelLogTick >= 2000)
+            {
+                m_lastVelLogTick = now;
+                const float mag = sqrtf(m_angularVelocity[0] * m_angularVelocity[0] +
+                                        m_angularVelocity[1] * m_angularVelocity[1] +
+                                        m_angularVelocity[2] * m_angularVelocity[2]);
+                DriverLog("VELOCITY |w|=%.4f rad/s (%.2f deg/s) w=(%.3f, %.3f, %.3f) dt=%.4f\n",
+                          mag, mag * 57.2958f,
+                          m_angularVelocity[0], m_angularVelocity[1], m_angularVelocity[2], dt);
+            }
+        }
+
+        pose.vecAngularVelocity[0] = m_angularVelocity[0];
+        pose.vecAngularVelocity[1] = m_angularVelocity[1];
+        pose.vecAngularVelocity[2] = m_angularVelocity[2];
+
+        pose.qRotation.x = rquat[0];
+        pose.qRotation.y = rquat[1];
+        pose.qRotation.z = rquat[2];
+        pose.qRotation.w = rquat[3];
 
         float pos[3];
         ohmd_device_getf(d, OHMD_POSITION_VECTOR, pos);
@@ -1194,6 +1406,48 @@ public:
         {
             vr::VRServerDriverHost()->TrackedDevicePoseUpdated( m_unObjectId, GetPose(), sizeof( DriverPose_t ) );
         }
+    }
+
+    // Rotate a quaternion by the inverse of a reference orientation:
+    //   out = conj(ref) * q
+    // ref and q are (x, y, z, w). The reference is the orientation captured
+    // the last time the user recentred, so the view keeps facing the same way
+    // as it did at that moment.
+    static void applyRecenter(const float ref[4], const float q[4], float out[4])
+    {
+        const float ax = -ref[0], ay = -ref[1], az = -ref[2], aw = ref[3];
+        const float bx = q[0], by = q[1], bz = q[2], bw = q[3];
+
+        out[0] = aw * bx + ax * bw + ay * bz - az * by;
+        out[1] = aw * by + ay * bw + az * bx - ax * bz;
+        out[2] = aw * bz + az * bw + ax * by - ay * bx;
+        out[3] = aw * bw - ax * bx - ay * by - az * bz;
+    }
+
+    // Angular velocity (rad/s) from the rotation between two consecutive poses:
+    //   dq = cur * conj(prev),   omega = axis * angle / dt
+    static void computeAngularVelocity(const float prev[4], const float cur[4], float dt, float out[3])
+    {
+        const float px = -prev[0], py = -prev[1], pz = -prev[2], pw = prev[3];
+        const float cx = cur[0], cy = cur[1], cz = cur[2], cw = cur[3];
+
+        const float dx = cw * px + cx * pw + cy * pz - cz * py;
+        const float dy = cw * py + cy * pw + cz * px - cx * pz;
+        const float dz = cw * pz + cz * pw + cx * py - cy * px;
+        const float dw = cw * pw - cx * px - cy * py - cz * pz;
+
+        const float s = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (s < 1e-8f || dt <= 0.0f)
+        {
+            out[0] = out[1] = out[2] = 0.0f;
+            return;
+        }
+
+        const float angle = 2.0f * atan2f(s, dw);
+        const float k = angle / (s * dt);
+        out[0] = dx * k;
+        out[1] = dy * k;
+        out[2] = dz * k;
     }
 
     std::string GetSerialNumber() const { return m_sSerialNumber; }
@@ -1229,6 +1483,19 @@ private:
     float m_flDistortionCoeffs[4];
     float m_flAberration[3];
     bool m_bDistortLogged[2] = {false, false};
+
+    // Headset button state (OK / BACK) and the recenter reference.
+    bool m_bButtonOkDown = false;
+    bool m_bButtonBackDown = false;
+    bool m_bProximityPresent = false;
+    bool m_bHasRecenter = false;
+    float m_recenterRef[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+    // Previous pose and clock, used to derive the angular velocity.
+    float m_prevQuat[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    float m_angularVelocity[3] = { 0.0f, 0.0f, 0.0f };
+    unsigned long long m_lastPoseTick = 0;
+    unsigned long long m_lastVelLogTick = 0;
 };
 
 //-----------------------------------------------------------------------------
@@ -1247,7 +1514,24 @@ public:
     virtual void Cleanup() ;
     virtual const char * const *GetInterfaceVersions() { return vr::k_InterfaceVersions; }
     virtual void RunFrame() ;
-    virtual bool ShouldBlockStandbyMode()  { return false; }
+
+    // The LGR100 is presented as a *desktop mirror window* on the panel, not as a
+    // direct-mode HMD. When SteamVR puts the device in standby it stops
+    // rendering the mirror window altogether, and the panel goes **completely
+    // black** while the visor is still perfectly connected and tracking.
+    //
+    // The log showed this happening over and over (several times per minute),
+    // which is exactly the "intermittent black" the project has been chasing:
+    //
+    //   20:47:09  0 - entering standby
+    //   20:52:38  0 - leaving standby
+    //   20:53:00  0 - entering standby
+    //   ...
+    //
+    // The visor has no real power management to do (the panels are kept alive by
+    // the HID "Sleep Disable" command), so there is nothing to gain from letting
+    // SteamVR idle it. Blocking standby keeps the compositor presenting.
+    virtual bool ShouldBlockStandbyMode()  { return true; }
     virtual void EnterStandby()  {}
     virtual void LeaveStandby()  {}
 

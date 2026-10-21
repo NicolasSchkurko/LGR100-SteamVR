@@ -163,6 +163,26 @@ typedef enum {
 	/** float[OHMD_CONTROL_COUNT] (get): Get the state of the device's controls. */
 	OHMD_CONTROLS_STATE                = 22,
 
+	/** float[1] (get): Driver specific (LGR100 only): restart the gyro bias
+	    estimation. The next ~200 IMU samples (about 1 s at 200 Hz) are used to
+	    measure the gyro DC offset again, so the calibration can be redone on
+	    demand (button press on the visor) instead of relying on the automatic
+	    tracking. Reading it returns 1 when the recalibration was triggered. */
+	OHMD_LGR100_RECALIBRATE            = 23,
+
+	/** float[1] (get): Driver specific (LGR100 only): re-send the panel
+	    activation commands ("Sleep Disable" + "VR App Start") so the panels
+	    light up again without unplugging the device. Reading it returns 1 when
+	    the commands were accepted by the firmware. */
+	OHMD_LGR100_ACTIVATE               = 24,
+
+	/** float[1] (get): Driver specific (LGR100 only): 1 when the proximity
+	    sensor reports that something is in front of it (the headset is being
+	    worn), 0 when it reports nothing. The visor uses the same sensor to
+	    turn the panels off, and SteamVR uses it to decide whether the headset
+	    is in use before parking it in standby. */
+	OHMD_LGR100_USER_PRESENT           = 25,
+
 } ohmd_float_value;
 
 /** A collection of int value information types used for getting information with ohmd_device_geti(). */

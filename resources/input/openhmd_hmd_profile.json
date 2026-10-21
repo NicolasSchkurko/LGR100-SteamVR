@@ -1,0 +1,29 @@
+{
+   "jsonid" : "input_profile",
+   "controller_type" : "openhmd_hmd",
+   "legacy_profile" : "openhmd_hmd",
+   "legacy_binding" : "{openhmd}/input/legacy_binding_openhmd_hmd.json",
+   "input_bindingui_mode" : "hmd",
+   "device_class" : "TrackedDeviceClass_HMD",
+   "resource_root" : "openhmd",
+   "driver_name" : "openhmd",
+   "should_show_binding_errors" : false,
+   "input_bindingui_right" : {
+      "image" : "{openhmd}/icons/openhmd-logo.png"
+   },
+   "input_source" : {
+      "/input/system" : {
+         "type" : "button",
+         "order" : 1,
+         "binding_image_point" : [ 127, 62 ]
+      },
+      "/proximity" : {
+         "type" : "button",
+         "binding_image_point" : [ 60, 60 ]
+      },
+      "/pose/raw" : {
+         "type" : "pose",
+         "binding_image_point" : [ 63, 148 ]
+      }
+   }
+}
