@@ -1,4 +1,4 @@
-{
+﻿{
         "jsonid": "input_profile",
         "controller_type": "openhmd_controller",
 	"legacy_profile": "openhmd_controller",
@@ -9,10 +9,10 @@
 	"driver_name" : "openhmd",
 	"should_show_binding_errors" :  true,
         "input_bindingui_right": {
-                "image": "{openhmd}/icons/openhmd_controller.svg"
+                "image": "{openhmd}/icons/openhmd-logo.png"
         },
         "input_bindingui_left": {
-                "image": "{openhmd}/icons/openhmd_controller.svg"
+                "image": "{openhmd}/icons/openhmd-logo.png"
         },
         "input_source": {
                 "/input/joystick" : { 
@@ -95,4 +95,5 @@
                 }
         ]
 }
+
 
