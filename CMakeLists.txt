@@ -39,8 +39,14 @@ add_library(lgr100_standalone STATIC
 target_include_directories(lgr100_standalone PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/standalone)
 target_link_libraries(lgr100_standalone ${HIDAPI_LIBRARIES})
 
-# openvr_driver.h (Valve's OpenVR SDK header).
-include_directories("${CMAKE_SOURCE_DIR}/openvr/")
+# openvr_driver.h (Valve's OpenVR SDK header, the server side). It lives in the
+# project's third_party, next to the client half of the SDK (openvr.h and
+# openvr_api.lib) that the tools use.
+set(OPENVR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/openvr")
+if(NOT EXISTS "${OPENVR_ROOT}/openvr_driver.h")
+    set(OPENVR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/openvr")
+endif()
+include_directories("${OPENVR_ROOT}")
 
 add_library(driver_openhmd SHARED
   driverlog.cpp
