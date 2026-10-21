@@ -83,6 +83,28 @@ bool Lgr100Device::open()
 		return true;
 	}
 
+	if (!openHandle())
+	{
+		return false;
+	}
+
+	// Wake the panels: without these commands they stay dark.
+	sendActivation();
+
+	m_running = true;
+	m_thread = std::thread(&Lgr100Device::readerLoop, this);
+
+	DriverLog("lgr100: opened %s\n", m_path.c_str());
+	return true;
+}
+
+bool Lgr100Device::openHandle()
+{
+	if (m_handle)
+	{
+		return true;
+	}
+
 	// Find the headset's HID interface. The original driver took the first
 	// interface the enumeration returns, so the same is done here.
 	struct hid_device_info* devs = hid_enumerate(LGR100_VID, LGR100_PID);
@@ -90,13 +112,6 @@ bool Lgr100Device::open()
 	{
 		m_error = "no LG 360 VR HID interface found";
 		return false;
-	}
-
-	for (struct hid_device_info* cur = devs; cur; cur = cur->next)
-	{
-		DriverLog("lgr100: hid interface %s (usage_page=0x%04x usage=0x%04x interface=%d)\n",
-				  cur->path ? cur->path : "(null)",
-				  cur->usage_page, cur->usage, cur->interface_number);
 	}
 
 	struct hid_device_info* pick = devs;
@@ -138,13 +153,6 @@ bool Lgr100Device::open()
 	ofusion_init(&m_fusion);
 	m_fusion.grav_gain = 0.5f;
 
-	// Wake the panels: without these commands they stay dark.
-	sendActivation();
-
-	m_running = true;
-	m_thread = std::thread(&Lgr100Device::readerLoop, this);
-
-	DriverLog("lgr100: opened %s\n", m_path.c_str());
 	return true;
 }
 
@@ -178,9 +186,26 @@ void Lgr100Device::readerLoop()
 		int size = hid_read_timeout(m_handle, buffer, FEATURE_BUFFER_SIZE, 0);
 		if (size < 0)
 		{
-			DriverLog("lgr100: error reading from device\n");
-			m_error = "error reading from the HID interface";
-			break;
+			// The headset was unplugged (or the endpoint died). Reopen it as
+			// soon as it comes back, so a replug does not need a restart of
+			// SteamVR.
+			DriverLog("lgr100: read error, waiting for the headset to come back\n");
+			if (m_handle)
+			{
+				hid_close(m_handle);
+				m_handle = NULL;
+			}
+			while (m_running)
+			{
+				Sleep(1000);
+				if (m_running && openHandle())
+				{
+					DriverLog("lgr100: headset reconnected, waking the panels\n");
+					sendActivation();
+					break;
+				}
+			}
+			continue;
 		}
 		if (size == 0)
 		{
