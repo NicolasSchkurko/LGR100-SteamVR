@@ -4,29 +4,13 @@ Log of the project's open items, ordered from most to least urgent. Each item st
 
 | # | Item | Why it is here |
 | --- | --- | --- |
-| 1 | Intermittent black left eye | Main open bug: stereo rendering drops the left panel when a real scene (e.g. Steam Home) loads |
 | 2 | `firmware/tools/dload_flash.py` referenced but not in the repository | The command reference documents the reflash procedure with a script nobody else can run |
 | 3 | No lens distortion calibration | The image is presented without warp correction; no factory calibration exists for this headset |
 | 4 | HID OUT endpoint can wedge under write bursts | A long burst of writes breaks `hid_write` until a physical replug; only documented, not mitigated |
 | 5 | Compass stream untested; yaw drift uncorrected | 3DOF yaw drifts (~0.3° / 57 s in bench testing); the firmware exposes a magnetometer that could correct it |
-| 6 | Phase 1: standalone driver | Planned: drop the OpenHMD dependency (direct hidapi + own sensor fusion), per the README roadmap |
 | 7 | Verify the `Sleep Disable` opcode fix on hardware | `lgr100.c` now sends `0x0D`; the corrected command has not been confirmed on a real device yet |
 
 ---
-
-## 1. Intermittent black left eye
-
-**Status:** open
-**Severity:** high
-**Files:** `driver_openhmd.cpp`, `openhmd/src/drv_lgr100/lgr100.c`
-
-### What happens
-
-Stereo rendering works in most builds, but the left eye intermittently goes black. It breaks when a real scene (such as Steam Home) loads. Logs confirm both eyes receive identical, valid frusta and distortion calibration, so the projection math is not the cause; the evidence points to presentation/compositor timing.
-
-### Proposal
-
-Instrument the present path (per-eye frame submission timing), compare a static test scene against Steam Home, and check whether the failure correlates with compositor scene loads. Keep any logging behind an off-by-default flag: the previous CSV logger on the update thread crashed `vrserver` (see Fixed).
 
 ## 2. Missing `dload_flash.py`
 
@@ -84,20 +68,6 @@ Harden the probing tooling: check the `hid_write` return value on every write, a
 
 Test the compass stream, decode its units, and evaluate it as a slow yaw reference (complementary filter). If the magnetometer is too noisy or absent on retail units, keep the current drift figures documented as a known limitation.
 
-## 6. Phase 1 — standalone driver
-
-**Status:** open (planned)
-**Severity:** low
-**Files:** repository-wide
-
-### What happens
-
-Phase 0 works on top of a vendored OpenHMD subset. The roadmap targets a standalone plugin that talks HID directly via hidapi and runs its own sensor fusion (estimated ~600–900 LOC), following the PSVR-SteamVR-openHMD approach.
-
-### Proposal
-
-Execute the roadmap when Phase 2 priorities allow: port the already-calibrated gyro scales, bias estimation and tick timing; keep the validated `IVRDisplayComponent` / distortion path. This removes the fragile dependency cycle and simplifies publishing.
-
 ## 7. Verify the `Sleep Disable` opcode fix on hardware
 
 **Status:** open (verification pending)
@@ -132,6 +102,19 @@ Enabling the per-sample CSV dump on the update thread crashed `vrserver` with a 
 
 `resources/LGR100 Commands.md`: full command reference recovered from the firmware dump and verified against a retail R100 — report layouts, the opcode-as-length semantics (with truncation proof), identification commands, sensor self-tests, display parameters, the DFU boot flag at `0x08004000`, the zero-length-DNLOAD clean exit, and a reflash procedure verified with the official V10d `.dfu`.
 
+### Intermittent black left eye resolved — 2026-10-20
+
+`driver_openhmd.cpp`: stereo rendering now works across builds; the earlier left-eye dropout in real scenes (e.g. Steam Home) no longer reproduces after the standalone driver took over panel activation and frame submission. Both eyes validated visually.
+
+### Phase 1: standalone driver completed — 2026-10-20
+
+Repository-wide: OpenHMD dependency dropped. The driver now talks to the HID directly via vendored hidapi (`standalone/`), running its own sensor fusion, report decoding and protocol; gyro scales, bias estimation and tick timing ported from the OpenHMD branch. HID is reconnected automatically after a replug. OpenVR/hidapi SDKs vendored under `third_party/`; Valve's sample icons and broken references removed.
+
+### Headset buttons and on-demand gyro calibration — 2026-10-20
+
+`standalone/lgr100_device.cpp`: `OK` re-measures gyro bias and recentres; `BACK` re-sends panel activation. Manual calibration replaces continuous bias tracking, which used to swallow slow rotations.
+
+
 ---
 
 ## Before publishing the repository
@@ -140,9 +123,9 @@ Enabling the per-sample CSV dump on the update thread crashed `vrserver` with a 
 - [x] License review: Boost 1.0 for this project and the vendored OpenHMD subset; `openvr/openvr_driver.h` keeps Valve's copyright header.
 - [x] Personal data scan: no local paths, usernames or credentials committed.
 - [ ] Confirm the README status wording is up to date on the day of publishing (it is currently honest work-in-progress).
-- [ ] Add repository topics (e.g. `steamvr`, `openvr`, `openhmd`, `virtual-reality`, `reverse-engineering`, `hid`).
-- [ ] Optional: resolve the black left eye first; publishing with the bug is acceptable while the status section stays accurate.
+- [x] Add repository topics (e.g. `steamvr`, `openvr`, `openhmd`, `virtual-reality`, `reverse-engineering`, `hid`).
+- [x] Optional: resolve the black left eye first; publishing with the bug is acceptable while the status section stays accurate.
 
 ---
 
-*Last updated: 2026-10-15*
+*Last updated: 2026-10-21*
