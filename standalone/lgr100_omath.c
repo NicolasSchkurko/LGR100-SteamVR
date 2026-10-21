@@ -1,4 +1,4 @@
-// Copyright 2013, Fredrik Hultin.
+﻿// Copyright 2013, Fredrik Hultin.
 // Copyright 2013, Jakob Bornecrantz.
 // SPDX-License-Identifier: BSL-1.0
 /*
@@ -9,7 +9,9 @@
 
 
 #include <string.h>
-#include "openhmdi.h"
+
+#include "lgr100_omath.h"
+
 
 // vector
 
@@ -394,3 +396,5 @@ void ofq_get_mean(const filter_queue* me, vec3f* vec)
 	vec->y /= (float)me->size;
 	vec->z /= (float)me->size;
 }
+
+

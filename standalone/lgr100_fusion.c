@@ -1,4 +1,4 @@
-// Copyright 2013, Fredrik Hultin.
+﻿// Copyright 2013, Fredrik Hultin.
 // Copyright 2013, Jakob Bornecrantz.
 // SPDX-License-Identifier: BSL-1.0
 /*
@@ -9,7 +9,9 @@
 
 
 #include <string.h>
-#include "openhmdi.h"
+
+#include "lgr100_fusion.h"
+
 
 void ofusion_init(fusion* me)
 {
@@ -125,3 +127,5 @@ void ofusion_update(fusion* me, float dt, const vec3f* ang_vel, const vec3f* acc
 	// inprecision with quat multiplication.
 	oquatf_normalize_me(&me->orient);
 }
+
+

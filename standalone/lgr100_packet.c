@@ -1,4 +1,4 @@
-// Copyright 2018, Joey Ferwerda.
+﻿// Copyright 2018, Joey Ferwerda.
 // SPDX-License-Identifier: BSL-1.0
 /*
  * OpenHMD - Free and Open Source API and drivers for immersive technology.
@@ -6,7 +6,9 @@
 
 /* LG R100 (360VR) Driver */
 
-#include "lgr100.h"
+#include "lgr100_protocol.h"
+
+#include <stdio.h>
 
 #define READFLOAT (*(float*)buffer); buffer += 4;
 
@@ -15,7 +17,7 @@ bool decode_lgr100_imu_msg(lgr100_sensor_sample* smp, const unsigned char* buffe
 	// On Windows (hidapi-winapi) reports come padded to the max packet size (64),
 	// while on Linux they come as 31/32 bytes. Accept anything >= the 30-byte body.
 	if(size < 30){
-		LOGE("invalid packet size (expected >= 30 but got %d)", size);
+		fprintf(stderr, "lgr100: invalid packet size (expected >= 30 but got %d)\n", size);
 		return false;
 	}
 
@@ -33,3 +35,4 @@ bool decode_lgr100_imu_msg(lgr100_sensor_sample* smp, const unsigned char* buffe
 	memcpy(&smp->tick, buffer + 1, 4);
 	return true;
 }
+

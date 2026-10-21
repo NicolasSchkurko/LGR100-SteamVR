@@ -1,4 +1,4 @@
-// Copyright 2013, Fredrik Hultin.
+﻿// Copyright 2013, Fredrik Hultin.
 // Copyright 2013, Jakob Bornecrantz.
 // SPDX-License-Identifier: BSL-1.0
 /*
@@ -7,11 +7,15 @@
 
 /* Math */
 
-
-#ifndef OMATH_H
-#define OMATH_H
+#ifndef LGR100_OMATH_H
+#define LGR100_OMATH_H
 
 #include <math.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -24,27 +28,27 @@
 
 // vector
 
-typedef union { 
-	struct { 
-		float x, y, z; 
-	}; 
-	float arr[3]; 
+typedef union {
+	struct {
+		float x, y, z;
+	};
+	float arr[3];
 } vec3f;
 
 void ovec3f_normalize_me(vec3f* me);
 float ovec3f_get_length(const vec3f* me);
-float ovec3f_get_angle(const vec3f* me, const vec3f* vec); 
+float ovec3f_get_angle(const vec3f* me, const vec3f* vec);
 float ovec3f_get_dot(const vec3f* me, const vec3f* vec);
 void ovec3f_subtract(const vec3f* a, const vec3f* b, vec3f* out);
 
 
 // quaternion
 
-typedef union { 
-	struct { 
-		float x, y, z, w; 
-	}; 
-	float arr[4]; 
+typedef union {
+	struct {
+		float x, y, z, w;
+	};
+	float arr[4];
 } quatf;
 
 void oquatf_init_axis(quatf* me, const vec3f* vec, float angle);
@@ -87,5 +91,9 @@ typedef struct {
 void ofq_init(filter_queue* me, int size);
 void ofq_add(filter_queue* me, const vec3f* vec);
 void ofq_get_mean(const filter_queue* me, vec3f* vec);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

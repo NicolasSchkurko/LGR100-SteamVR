@@ -1,9 +1,12 @@
-//============ Copyright (c) Valve Corporation, All rights reserved. ============
-
-#include "ohmd_config.h" // which hmds and trackers to use
+﻿//============ Copyright (c) Valve Corporation, All rights reserved. ============
 
 #include <openvr_driver.h>
 #include "driverlog.h"
+
+// The headset is driven directly through hidapi: the driver owns the HID
+// device, decodes the IMU reports and runs the sensor fusion. There is no
+// OpenHMD in between any more.
+#include "standalone/lgr100_device.h"
 
 #include <assert.h>
 
@@ -16,8 +19,6 @@
 #if defined( _WINDOWS )
 #include <windows.h>
 #endif
-
-#include <openhmd.h>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -78,36 +79,8 @@ static bool headsetDisplayPresent()
 #error "Unsupported Platform."
 #endif
 
-ohmd_context* ctx;
-
 class COpenHMDDeviceDriverController;
 
-
-// gets float values from the device and prints them
-void print_infof(ohmd_device* hmd, const char* name, int len, ohmd_float_value val)
-{
-    float f[20];
-    assert (len <= 20);
-
-    ohmd_device_getf(hmd, val, f);
-    printf("%-25s", name);
-    for(int i = 0; i < len; i++)
-        printf("%f ", f[i]);
-    printf("\n");
-}
-
-// gets int values from the device and prints them
-void print_infoi(ohmd_device* hmd, const char* name, int len, ohmd_int_value val)
-{
-    int iv[20];
-    assert (len <= 20);
-
-    ohmd_device_geti(hmd, val, iv);
-    printf("%-25s", name);
-    for(int i = 0; i < len; i++)
-        printf("%d ", iv[i]);
-    printf("\n");
-}
 
 // keys for use with the settings API
 static const char * const k_pch_Sample_Section = "driver_openhmd";
@@ -199,27 +172,34 @@ EVRInitError CWatchdogDriver_OpenHMD::Init( vr::IVRDriverContext *pDriverContext
     CleanupDriverLog();
 }
 
+// Control hints and types of the null controllers. They used to come from
+// OpenHMD's dummy driver; the values are the same, so the input paths the
+// controllers expose do not change.
+enum ENullControlHint
+{
+	kNullGeneric = 0, kNullTrigger, kNullTriggerClick, kNullSqueeze,
+	kNullMenu, kNullHome, kNullAnalogX, kNullAnalogY, kNullAnalogPress,
+	kNullButtonA, kNullButtonB, kNullButtonX, kNullButtonY,
+	kNullVolumeUp, kNullVolumeDown, kNullMicMute
+};
+
+enum ENullControlType
+{
+	kNullDigital = 0,
+	kNullAnalog = 1
+};
+
 class COpenHMDDeviceDriverController : public vr::ITrackedDeviceServerDriver /*, public vr::IVRControllerComponent */ {
 public:
     int index;
-    ohmd_device* device;
-    int device_idx;
-    int device_flags;
+    bool m_is_left;
     DriverPose_t pose;
 
-    bool m_is_oculus;
-
-    COpenHMDDeviceDriverController(int index, ohmd_device* _device, int _device_idx) :
-		index(index), device(_device), device_idx(_device_idx) {
-        DriverLog("construct controller object %d (OpenHMD device %d)\n", index, device_idx);
+    COpenHMDDeviceDriverController(int index, bool bIsLeft) :
+		index(index), m_is_left(bIsLeft) {
+        DriverLog("construct controller object %d (null device)\n", index);
         m_unObjectId = vr::k_unTrackedDeviceIndexInvalid;
         pose = { 0 };
-
-
-        if (strcmp(ohmd_list_gets(ctx, device_idx, OHMD_VENDOR), "Oculus VR, Inc.") == 0) {
-            m_is_oculus = true;
-            DriverLog("detected oculus controllers, using oculus input profile");
-        }
     }
     virtual ~COpenHMDDeviceDriverController() {}
 
@@ -228,36 +208,16 @@ public:
         DriverLog("activate controller %d: %d\n", index, unObjectId);
         m_unObjectId = unObjectId;
 
-        if (this->device == NULL) {
-          return VRInitError_Init_InterfaceNotFound;
-        }
-
         m_ulPropertyContainer = vr::VRProperties()->TrackedDeviceToPropertyContainer( m_unObjectId );
 
-        const char *controllerModel = ohmd_list_gets(ctx, device_idx, OHMD_PRODUCT);
-
-	ohmd_list_geti(ctx, device_idx, OHMD_DEVICE_FLAGS, &device_flags);
+        const char *controllerModel = m_is_left ? "Left Controller Null Device" : "Right Controller Null Device";
 
         vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_ModelNumber_String, controllerModel);
         //vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_RenderModelName_String, controllerModel);
 	//vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_ModelNumber_String, "1" );
-        if (m_is_oculus) {
-            // steamapps/common/SteamVR/drivers/oculus/resources/input/touch_profile.json -> "controller_type": "oculus_touch"
-            vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_ControllerType_String, "oculus_touch" );
-            vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_InputProfilePath_String, "{oculus}/input/touch_profile.json" );
-
-            if (device_flags & OHMD_DEVICE_FLAGS_LEFT_CONTROLLER) {
-                // steamapps/common/SteamVR/resources/rendermodels/oculus_cv1_controller_left
-                vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_RenderModelName_String, "oculus_cv1_controller_left");
-            } else if (device_flags & OHMD_DEVICE_FLAGS_RIGHT_CONTROLLER) {
-                // steamapps/common/SteamVR/resources/rendermodels/oculus_cv1_controller_right
-                vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_RenderModelName_String, "oculus_cv1_controller_right");
-            }
-        } else {
-            vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_ControllerType_String, "openhmd_controller" );
-            vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_InputProfilePath_String, "{openhmd}/input/openhmd_controller_profile.json" );
-            vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_RenderModelName_String, "vr_controller_vive_1_5");
-        }
+        vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_ControllerType_String, "openhmd_controller" );
+        vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_InputProfilePath_String, "{openhmd}/input/openhmd_controller_profile.json" );
+        vr::VRProperties()->SetStringProperty( m_ulPropertyContainer, Prop_RenderModelName_String, "vr_controller_vive_1_5");
 
 
         // return a constant that's not 0 (invalid) or 1 (reserved for Oculus)
@@ -268,7 +228,7 @@ public:
         // avoid "not fullscreen" warnings from vrmonitor
         vr::VRProperties()->SetBoolProperty( m_ulPropertyContainer, Prop_IsOnDesktop_Bool, false );
 
-	if (device_flags & OHMD_DEVICE_FLAGS_LEFT_CONTROLLER) {
+	if (m_is_left) {
            DriverLog("Left Controller\n");
            vr::VRProperties()->SetInt32Property( m_ulPropertyContainer, Prop_ControllerRoleHint_Int32, TrackedControllerRole_LeftHand);
 	   // Set an initial position down and to the left, which will be
@@ -285,10 +245,7 @@ public:
 	}
 
 
-        int control_count;
-        ohmd_device_geti(device, OHMD_CONTROL_COUNT, &control_count);
-        if (control_count > 64)
-          control_count = 64;
+        const int control_count = 2;
 
         const char* controls_fn_str[] = { "generic", "trigger", "trigger_click", "squeeze", "menu", "home",
                 "analog-x", "analog-y", "anlog_press", "button-a", "button-b", "button-x", "button-y",
@@ -298,8 +255,10 @@ public:
         int controls_fn[64];
         int controls_types[64];
 
-        ohmd_device_geti(device, OHMD_CONTROLS_HINTS, controls_fn);
-        ohmd_device_geti(device, OHMD_CONTROLS_TYPES, controls_types);
+        controls_fn[0] = kNullButtonA;
+        controls_fn[1] = kNullMenu;
+        controls_types[0] = kNullAnalog;
+        controls_types[1] = kNullDigital;
 
         for(int i = 0; i < control_count; i++){
           DriverLog("%s (%s)%s\n", controls_fn_str[controls_fn[i]], controls_type_str[controls_types[i]], i == control_count - 1 ? "" : ", ");
@@ -313,49 +272,49 @@ public:
           // TODO: inputs match steamapps/common/SteamVR/drivers/oculus/resources/input/touch_profile.json
           // but also support other controllers
           switch (controls_fn[i]) {
-            case OHMD_GENERIC:
+            case kNullGeneric:
               control_map = "/input/generic/click";
               break;
-            case OHMD_TRIGGER:
+            case kNullTrigger:
               control_map = "/input/trigger/value";
               break;
-            case OHMD_TRIGGER_CLICK:
+            case kNullTriggerClick:
               control_map = "/input/trigger/click";
               break;
-            case OHMD_SQUEEZE:
+            case kNullSqueeze:
               control_map = "/input/grip/value";
               break;
-            case OHMD_MENU:
+            case kNullMenu:
               control_map = "/input/system/click";
               break;
-            case OHMD_HOME:
+            case kNullHome:
                 // TODO: this button doesn't have an input in touch_profile.json
               control_map = "/input/system/click";
               break;
-            case OHMD_ANALOG_X:
+            case kNullAnalogX:
               control_map = "/input/joystick/x";
               analog_type = VRScalarUnits_NormalizedTwoSided;
               break;
-            case OHMD_ANALOG_Y:
+            case kNullAnalogY:
               control_map = "/input/joystick/y";
               analog_type = VRScalarUnits_NormalizedTwoSided;
               break;
-            case OHMD_ANALOG_PRESS:
+            case kNullAnalogPress:
               control_map = "/input/joystick/click";
               break;
-            case OHMD_BUTTON_A:
+            case kNullButtonA:
               control_map = "/input/a/click";
               touch_map = "/input/a/touch";
               break;
-            case OHMD_BUTTON_B:
+            case kNullButtonB:
               control_map = "/input/b/click";
               touch_map = "/input/b/touch";
               break;
-            case OHMD_BUTTON_X:
+            case kNullButtonX:
               control_map = "/input/x/click";
               touch_map = "/input/x/touch";
               break;
-            case OHMD_BUTTON_Y:
+            case kNullButtonY:
               control_map = "/input/y/click";
               touch_map = "/input/y/touch";
               break;
@@ -366,7 +325,7 @@ public:
 
           /* We fall through here for generic buttons */
           if (control_map != NULL) {
-            if (controls_types[i] == OHMD_DIGITAL) {
+            if (controls_types[i] == kNullDigital) {
               vr::VRDriverInput()->CreateBooleanComponent( m_ulPropertyContainer, control_map, m_buttons + i);
             }
             else {
@@ -419,22 +378,16 @@ public:
 	pose.result = TrackingResult_Running_OK;
 	pose.deviceIsConnected = true;
 
-	if (device_flags & OHMD_DEVICE_FLAGS_ROTATIONAL_TRACKING) {
-		float quat[4];
-		ohmd_device_getf(device, OHMD_ROTATION_QUAT, quat);
-		pose.qRotation.x = quat[0];
-		pose.qRotation.y = quat[1];
-		pose.qRotation.z = quat[2];
-		pose.qRotation.w = quat[3];
-	}
+	// The null controllers have no tracking of their own: an identity
+	// rotation and a fixed position, exactly as OpenHMD's dummy driver did.
+	pose.qRotation.x = 0.0f;
+	pose.qRotation.y = 0.0f;
+	pose.qRotation.z = 0.0f;
+	pose.qRotation.w = 1.0f;
 
-	if (device_flags & OHMD_DEVICE_FLAGS_POSITIONAL_TRACKING) {
-		float pos[3];
-		ohmd_device_getf(device, OHMD_POSITION_VECTOR, pos);
-		pose.vecPosition[0] = pos[0];
-		pose.vecPosition[1] = pos[1];
-		pose.vecPosition[2] = pos[2];
-	}
+	pose.vecPosition[0] = m_is_left ? -0.5f : 0.5f;
+	pose.vecPosition[1] = 0.0f;
+	pose.vecPosition[2] = 0.0f;
 
 	// DriverLog("get controller %d pose %f %f %f %f, %f %f %f\n", index, quat[0], quat[1], quat[2], quat[3], pos[0], pos[1], pos[2]);
 
@@ -443,18 +396,8 @@ public:
 		pose.vecWorldFromDriverTranslation[i] = 0.0;
 	}
 
-	if (m_is_oculus) {
-		const HmdQuaternion_t oculusOffsetQ  = { 0.966, 0.259, 0, 0};
-
-		pose.qDriverFromHeadRotation = oculusOffsetQ;
-		pose.qWorldFromDriverRotation = identityquat;
-
-		pose.vecDriverFromHeadTranslation[2] = 0.08;
-	}
-	else {
-		pose.qDriverFromHeadRotation = identityquat;
-		pose.qWorldFromDriverRotation = identityquat;
-	}
+	pose.qDriverFromHeadRotation = identityquat;
+	pose.qWorldFromDriverRotation = identityquat;
 
 	return pose;
     }
@@ -462,14 +405,8 @@ public:
     void RunFrame() {
         vr::VRServerDriverHost()->TrackedDevicePoseUpdated(m_unObjectId, GetPose(), sizeof( DriverPose_t ) );
 
-        int control_count;
-        float control_state[256];
-
-        ohmd_device_geti(device, OHMD_CONTROL_COUNT, &control_count);
-        if (control_count > 64)
-          control_count = 64;
-
-        ohmd_device_getf(device, OHMD_CONTROLS_STATE, control_state);
+        const int control_count = 2;
+        float control_state[2] = { 0.1f, 1.0f };
 
         for (int i = 0; i < control_count; i++) {
           if (m_buttons[i] != k_ulInvalidInputComponentHandle) {
@@ -527,88 +464,58 @@ private:
 class COpenHMDDeviceDriver final : public vr::ITrackedDeviceServerDriver, public vr::IVRDisplayComponent
 {
 public:
-    COpenHMDDeviceDriver(int hmddisplay_idx, int hmdtracker_idx)
+    COpenHMDDeviceDriver()
     {
-        hmd = ohmd_list_open_device(ctx, hmddisplay_idx);
-        if (hmdtracker_idx != -1 && hmdtracker_idx != hmddisplay_idx)
-	    hmdtracker = ohmd_list_open_device(ctx, hmdtracker_idx);
-	else
-	    hmdtracker = NULL;
-
-        if(!hmd){
-            DriverLog("failed to open device: %s\n", ohmd_ctx_get_error(ctx));
+        // The headset is opened directly through hidapi. If it cannot be
+        // opened the driver still loads, and reports the reason through the
+        // SteamVR log.
+        if (!m_device.open())
+        {
+            DriverLog("failed to open device: %s\n", m_device.lastError());
         }
 
-        // Surface the HMD-side status that OpenHMD records through its error
-        // string. open_device() reports the panel activation outcome here,
-        // because OpenHMD's own logging is printf to stdout and SteamVR never
-        // captures it - so without this the driver had no visibility at all into
-        // whether the panels had been activated (a failed activation leaves the
-        // left panel dark and looks exactly like a rendering bug).
-        const char* hmd_status = ohmd_ctx_get_error(ctx);
+        // Surface the status of the panel activation. It matters because a
+        // failed activation leaves the left panel dark and looks exactly like
+        // a rendering bug.
+        const char* hmd_status = m_device.lastError();
         if(hmd_status && hmd_status[0])
             DriverLog("driver_openhmd: HMD status: %s\n", hmd_status);
-
-        int ivals[2];
-        ohmd_device_geti(hmd, OHMD_SCREEN_HORIZONTAL_RESOLUTION, ivals);
-        ohmd_device_geti(hmd, OHMD_SCREEN_VERTICAL_RESOLUTION, ivals + 1);
-        //DriverLog("resolution:              %i x %i\n", ivals[0], ivals[1]);
-
-        /*
-        print_infof(hmd, "hsize:",            1, OHMD_SCREEN_HORIZONTAL_SIZE);
-        print_infof(hmd, "vsize:",            1, OHMD_SCREEN_VERTICAL_SIZE);
-        print_infof(hmd, "lens separation:",  1, OHMD_LENS_HORIZONTAL_SEPARATION);
-        print_infof(hmd, "lens vcenter:",     1, OHMD_LENS_VERTICAL_POSITION);
-        print_infof(hmd, "left eye fov:",     1, OHMD_LEFT_EYE_FOV);
-        print_infof(hmd, "right eye fov:",    1, OHMD_RIGHT_EYE_FOV);
-        print_infof(hmd, "left eye aspect:",  1, OHMD_LEFT_EYE_ASPECT_RATIO);
-        print_infof(hmd, "right eye aspect:", 1, OHMD_RIGHT_EYE_ASPECT_RATIO);
-        print_infof(hmd, "distortion k:",     6, OHMD_DISTORTION_K);
-
-        print_infoi(hmd, "digital button count:", 1, OHMD_BUTTON_COUNT);
-        */
 
         m_unObjectId = vr::k_unTrackedDeviceIndexInvalid;
         m_ulPropertyContainer = vr::k_ulInvalidPropertyContainer;
 
         DriverLog( "Using settings values\n" );
-        ohmd_device_getf(hmd, OHMD_EYE_IPD, &m_flIPD);
-        
+        m_flIPD = m_device.ipd();
+
         {
             std::stringstream buf;
-            buf << ohmd_list_gets(ctx, hmddisplay_idx, OHMD_PRODUCT);
+            buf << m_device.product();
             buf << ": ";
-            buf << ohmd_list_gets(ctx, hmddisplay_idx, OHMD_PATH);
+            buf << m_device.path();
             m_sSerialNumber = buf.str();
         }
 
         {
             std::stringstream buf;
-            buf << "OpenHMD: ";
-            buf << ohmd_list_gets(ctx, hmddisplay_idx, OHMD_PRODUCT);
+            buf << "LG 360 VR: ";
+            buf << m_device.product();
             m_sModelNumber = buf.str();
         }
 
         // Important to pass vendor through. Gaze cursor is only available for "Oculus". So grab the first word.
-        char const* vendor_override = getenv("OHMD_VENDOR_OVERRIDE");
-        if (vendor_override) {
-            m_sVendor = vendor_override;
-        } else {
-            m_sVendor = ohmd_list_gets(ctx, hmddisplay_idx, OHMD_VENDOR);
-            if (m_sVendor.find(' ') != std::string::npos) {
-                m_sVendor = m_sVendor.substr(0, m_sVendor.find(' '));
-            }
+        m_sVendor = m_device.vendor();
+        if (m_sVendor.find(' ') != std::string::npos) {
+            m_sVendor = m_sVendor.substr(0, m_sVendor.find(' '));
         }
 
         m_nWindowX = 1920; //TODO: real window offset
         m_nWindowY = 0;
-        ohmd_device_geti(hmd, OHMD_SCREEN_HORIZONTAL_RESOLUTION, &m_nWindowWidth);
-        ohmd_device_geti(hmd, OHMD_SCREEN_VERTICAL_RESOLUTION, &m_nWindowHeight );
-        ohmd_device_geti(hmd, OHMD_SCREEN_HORIZONTAL_RESOLUTION, &m_nRenderWidth);
-        ohmd_device_geti(hmd, OHMD_SCREEN_VERTICAL_RESOLUTION, &m_nRenderHeight );
+        m_nWindowWidth = m_device.screenWidth();
+        m_nWindowHeight = m_device.screenHeight();
+        m_nRenderWidth = m_device.screenWidth();
+        m_nRenderHeight = m_device.screenHeight();
 
         m_flSecondsFromVsyncToPhotons = vr::VRSettings()->GetFloat( k_pch_Sample_Section, k_pch_Sample_SecondsFromVsyncToPhotons_Float );
-        //TODO: find actual frequency somehow (from openhmd?)
         m_flDisplayFrequency = vr::VRSettings()->GetFloat( k_pch_Sample_Section, k_pch_Sample_DisplayFrequency_Float );
 	// A zero refresh rate makes SteamVR's presentation timing invalid; fall back
 	// to a sane value when the setting is missing or unset.
@@ -624,16 +531,19 @@ public:
                                                 DriverLog( "driver_openhmd: Display Frequency: %f\n", m_flDisplayFrequency );
         DriverLog( "driver_openhmd: IPD: %f\n", m_flIPD );
 
-        float distortion_coeffs[4];
-        ohmd_device_getf(hmd, OHMD_UNIVERSAL_DISTORTION_K, &(distortion_coeffs[0]));
+        // The headset has no lens calibration: the distortion is the identity.
+        float distortion_coeffs[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         DriverLog("driver_openhmd: Distortion values a=%f b=%f c=%f d=%f\n", distortion_coeffs[0], distortion_coeffs[1], distortion_coeffs[2], distortion_coeffs[3]);
 
         // Cache everything the eye path needs, once. GetProjectionRaw and
         // ComputeDistortion are called by SteamVR while compositing; taking
         // OpenHMD's update mutex per call used to block them whenever the HID
         // thread stalled, which blacked out one eye.
-        ohmd_device_getf(hmd, OHMD_LEFT_EYE_GL_PROJECTION_MATRIX, m_flProjectionLeft);
-        ohmd_device_getf(hmd, OHMD_RIGHT_EYE_GL_PROJECTION_MATRIX, m_flProjectionRight);
+        // The projection matrices are computed from the panel geometry (the
+        // same maths OpenHMD used), so nothing has to be read from a device
+        // on the hot path.
+        m_device.getEyeProjection(0, m_flProjectionLeft);
+        m_device.getEyeProjection(1, m_flProjectionRight);
         {
             float pitch, roll;
             float p[4][4];
@@ -643,15 +553,18 @@ public:
             columnMatrixToAngles(&m_flRotationRight, &pitch, &roll, p);
         }
 
-        ohmd_device_getf(hmd, OHMD_SCREEN_HORIZONTAL_SIZE, &m_flViewportScale[0]);
-        m_flViewportScale[0] /= 2.0f;
-        ohmd_device_getf(hmd, OHMD_SCREEN_VERTICAL_SIZE, &m_flViewportScale[1]);
+        m_flViewportScale[0] = m_device.physicalWidth() / 2.0f;
+        m_flViewportScale[1] = m_device.physicalHeight();
 
-        float lens_sep;
-        ohmd_device_getf(hmd, OHMD_LENS_HORIZONTAL_SEPARATION, &lens_sep);
-        ohmd_device_getf(hmd, OHMD_LENS_VERTICAL_POSITION, &m_flLensCenterLeft[1]);
-        ohmd_device_getf(hmd, OHMD_UNIVERSAL_DISTORTION_K, m_flDistortionCoeffs);
-        ohmd_device_getf(hmd, OHMD_UNIVERSAL_ABERRATION_K, m_flAberration);
+        const float lens_sep = m_device.lensSeparation();
+        m_flLensCenterLeft[1] = m_device.lensVerticalPosition();
+        m_flDistortionCoeffs[0] = 0.0f;
+        m_flDistortionCoeffs[1] = 0.0f;
+        m_flDistortionCoeffs[2] = 0.0f;
+        m_flDistortionCoeffs[3] = 1.0f;
+        m_flAberration[0] = 1.0f;
+        m_flAberration[1] = 1.0f;
+        m_flAberration[2] = 1.0f;
 
         m_flLensCenterLeft[0] = m_flViewportScale[0] - lens_sep / 2.0f;
         m_flLensCenterRight[0] = lens_sep / 2.0f;
@@ -1252,10 +1165,8 @@ public:
         pose.result = TrackingResult_Running_OK;
         pose.deviceIsConnected = true;
 
-        ohmd_device* d = hmdtracker ? hmdtracker : hmd;
-
         float quat[4];
-        ohmd_device_getf(d, OHMD_ROTATION_QUAT, quat);
+        m_device.getRotationQuat(quat);
 
         // Headset buttons. They arrive in HID report ID 2 and are parsed by the
         // LGR100 driver inside OpenHMD, which exposes them through
@@ -1263,26 +1174,18 @@ public:
         // the physical buttons of the visor were dead as far as SteamVR was
         // concerned.
         float controls[2] = { 0.0f, 0.0f };
-        if (hmd)
-        {
-            ohmd_device_getf(hmd, OHMD_CONTROLS_STATE, controls);
-        }
+        m_device.getButtons(controls);
 
         // Proximity sensor (HID report ID 1): 1 when something is in front of
         // it, i.e. the headset is being worn. The visor uses the same sensor
         // to turn the panels off when it is not worn, and SteamVR uses it to
         // decide whether the headset is in use. Logged on every change so the
         // state can be correlated with the standby entries in the log.
-        if (hmd)
+        const bool nowPresent = m_device.proximityPresent();
+        if (nowPresent != m_bProximityPresent)
         {
-            float present = 0.0f;
-            ohmd_device_getf(hmd, OHMD_LGR100_USER_PRESENT, &present);
-            const bool nowPresent = present > 0.5f;
-            if (nowPresent != m_bProximityPresent)
-            {
-                m_bProximityPresent = nowPresent;
-                DriverLog("PROXIMITY: %s\n", nowPresent ? "present (visor in use)" : "absent (nothing in front)");
-            }
+            m_bProximityPresent = nowPresent;
+            DriverLog("PROXIMITY: %s\n", nowPresent ? "present (visor in use)" : "absent (nothing in front)");
         }
 
         const bool okDown = controls[0] > 0.5f;
@@ -1295,11 +1198,7 @@ public:
             // (about 1 s at 200 Hz), so the visor has to be held still for a
             // moment. This is the on-demand "stabilise" the automatic bias
             // tracking used to do continuously.
-            float trigger = 0.0f;
-            if (hmd)
-            {
-                ohmd_device_getf(hmd, OHMD_LGR100_RECALIBRATE, &trigger);
-            }
+            m_device.recalibrateGyro();
 
             m_recenterRef[0] = quat[0];
             m_recenterRef[1] = quat[1];
@@ -1307,8 +1206,8 @@ public:
             m_recenterRef[3] = quat[3];
             m_bHasRecenter = true;
 
-            DriverLog("BUTTON OK: gyro recalibration requested (ret=%d) + recentered to quat %.4f %.4f %.4f %.4f\n",
-                      (int)trigger, quat[0], quat[1], quat[2], quat[3]);
+            DriverLog("BUTTON OK: gyro recalibration requested + recentered to quat %.4f %.4f %.4f %.4f\n",
+                      quat[0], quat[1], quat[2], quat[3]);
         }
 
         if (backDown && !m_bButtonBackDown)
@@ -1317,11 +1216,7 @@ public:
             // "VR App Start"). That is the software equivalent of the
             // activation sequence: it lights the panels up again when they went
             // to sleep, without unplugging the USB-C.
-            float result = 0.0f;
-            if (hmd)
-            {
-                ohmd_device_getf(hmd, OHMD_LGR100_ACTIVATE, &result);
-            }
+            const bool result = m_device.activatePanels();
             DriverLog("BUTTON BACK: panel activation commands re-sent (ok=%d)\n", (int)result);
         }
 
@@ -1381,7 +1276,7 @@ public:
         pose.qRotation.w = rquat[3];
 
         float pos[3];
-        ohmd_device_getf(d, OHMD_POSITION_VECTOR, pos);
+        m_device.getPosition(pos);
         pose.vecPosition[0] = pos[0];
         pose.vecPosition[1] = pos[1];
         pose.vecPosition[2] = pos[2];
@@ -1453,8 +1348,7 @@ public:
     std::string GetSerialNumber() const { return m_sSerialNumber; }
 
 private:
-    ohmd_device* hmd = NULL;
-    ohmd_device* hmdtracker = NULL;
+    Lgr100Device m_device;
 
     vr::TrackedDeviceIndex_t m_unObjectId;
     vr::PropertyContainerHandle_t m_ulPropertyContainer;
@@ -1548,58 +1442,10 @@ EVRInitError CServerDriver_OpenHMD::Init( vr::IVRDriverContext *pDriverContext )
     VR_INIT_SERVER_DRIVER_CONTEXT( pDriverContext );
     InitDriverLog( vr::VRDriverLog() );
 
-    ctx = ohmd_ctx_create();
-    int num_devices = ohmd_ctx_probe(ctx);
-    if(num_devices < 0){
-        DriverLog("failed to probe devices: %s\n", ohmd_ctx_get_error(ctx));
-    }
-
-    int hmddisplay_idx = get_configvalues()[0];
-    int hmdtracker_idx = get_configvalues()[1];
-    int lcontroller_idx = get_configvalues()[2];
-    int rcontroller_idx = get_configvalues()[3];
-
-    for(int i = 0; i < num_devices; i++){
-        DriverLog("device %d\n", i);
-        DriverLog("  vendor:  %s\n", ohmd_list_gets(ctx, i, OHMD_VENDOR));
-        DriverLog("  product: %s\n", ohmd_list_gets(ctx, i, OHMD_PRODUCT));
-        DriverLog("  path:    %s\n\n", ohmd_list_gets(ctx, i, OHMD_PATH));
-
-        int device_class = 0, device_flags = 0;
-
-        ohmd_list_geti(ctx, i, OHMD_DEVICE_CLASS, &device_class);
-        ohmd_list_geti(ctx, i, OHMD_DEVICE_FLAGS, &device_flags);
-
-	switch (device_class) {
-		case OHMD_DEVICE_CLASS_HMD:
-			if (hmddisplay_idx == -1)
-				hmddisplay_idx = i;
-			break;
-		case OHMD_DEVICE_CLASS_CONTROLLER:
-			if (lcontroller_idx == -1 && (device_flags & OHMD_DEVICE_FLAGS_LEFT_CONTROLLER))
-				lcontroller_idx = i;
-			else if (rcontroller_idx == -1 && (device_flags & OHMD_DEVICE_FLAGS_RIGHT_CONTROLLER))
-				rcontroller_idx = i;
-			break;
-		case OHMD_DEVICE_CLASS_GENERIC_TRACKER:
-			if (hmdtracker_idx == -1 && !(device_flags & (OHMD_DEVICE_FLAGS_LEFT_CONTROLLER|OHMD_DEVICE_FLAGS_RIGHT_CONTROLLER)))
-				hmdtracker_idx = i;
-			else if (lcontroller_idx == -1 && (device_flags & OHMD_DEVICE_FLAGS_LEFT_CONTROLLER))
-				lcontroller_idx = i;
-			else if (rcontroller_idx == -1 && (device_flags & OHMD_DEVICE_FLAGS_RIGHT_CONTROLLER))
-				rcontroller_idx = i;
-			break;
-		default:
-			break;
-	}
-    }
-
-    if (hmdtracker_idx == -1)
-    	hmdtracker_idx = hmddisplay_idx;
-
-    DriverLog("Using HMD Display %d, HMD Tracker %d, Left Controller %d, Right Controller %d\n", hmddisplay_idx, hmdtracker_idx, lcontroller_idx, rcontroller_idx);
-
-    m_OpenHMDDeviceDriver = new COpenHMDDeviceDriver(hmddisplay_idx, hmdtracker_idx);
+    // The headset is opened by the driver itself (hidapi + sensor fusion).
+    // The two controllers are null devices, exactly as OpenHMD's dummy driver
+    // provided them.
+    m_OpenHMDDeviceDriver = new COpenHMDDeviceDriver();
 
     // Adding the HMD device makes SteamVR start the compositor, which needs the
     // LG panel to already be part of the display topology. On a cold start the
@@ -1616,23 +1462,13 @@ EVRInitError CServerDriver_OpenHMD::Init( vr::IVRDriverContext *pDriverContext )
     vr::VRServerDriverHost()->TrackedDeviceAdded( m_OpenHMDDeviceDriver->GetSerialNumber().c_str(), vr::TrackedDeviceClass_HMD, m_OpenHMDDeviceDriver );
     DriverLog("openhmd init: HMD tracked device added\n");
 
-    if (lcontroller_idx >= 0) {
-	DriverLog("openhmd init: opening left controller (index %d)\n", lcontroller_idx);
-	ohmd_device* lcontroller = ohmd_list_open_device(ctx, lcontroller_idx);
-	if (lcontroller)
-		m_OpenHMDDeviceDriverControllerL = new COpenHMDDeviceDriverController(0, lcontroller, lcontroller_idx);
-	if (m_OpenHMDDeviceDriverControllerL)
-		vr::VRServerDriverHost()->TrackedDeviceAdded( m_OpenHMDDeviceDriverControllerL->GetSerialNumber().c_str(), vr::TrackedDeviceClass_Controller, m_OpenHMDDeviceDriverControllerL );
-    }
+    DriverLog("openhmd init: opening left controller\n");
+    m_OpenHMDDeviceDriverControllerL = new COpenHMDDeviceDriverController(0, true);
+    vr::VRServerDriverHost()->TrackedDeviceAdded( m_OpenHMDDeviceDriverControllerL->GetSerialNumber().c_str(), vr::TrackedDeviceClass_Controller, m_OpenHMDDeviceDriverControllerL );
 
-    if (rcontroller_idx >= 0) {
-	DriverLog("openhmd init: opening right controller (index %d)\n", rcontroller_idx);
-	ohmd_device *rcontroller = ohmd_list_open_device(ctx, rcontroller_idx);
-	if (rcontroller)
-		m_OpenHMDDeviceDriverControllerR = new COpenHMDDeviceDriverController(1, rcontroller, rcontroller_idx);
-	if (m_OpenHMDDeviceDriverControllerR)
-		vr::VRServerDriverHost()->TrackedDeviceAdded(  m_OpenHMDDeviceDriverControllerR->GetSerialNumber().c_str(), vr::TrackedDeviceClass_Controller, m_OpenHMDDeviceDriverControllerR );
-    }
+    DriverLog("openhmd init: opening right controller\n");
+    m_OpenHMDDeviceDriverControllerR = new COpenHMDDeviceDriverController(1, false);
+    vr::VRServerDriverHost()->TrackedDeviceAdded(  m_OpenHMDDeviceDriverControllerR->GetSerialNumber().c_str(), vr::TrackedDeviceClass_Controller, m_OpenHMDDeviceDriverControllerR );
 
     DriverLog("openhmd init: all tracked devices added\n");
     return VRInitError_None;
@@ -1648,16 +1484,11 @@ void CServerDriver_OpenHMD::Cleanup()
       delete m_OpenHMDDeviceDriverControllerL;
     if (m_OpenHMDDeviceDriverControllerR)
       delete m_OpenHMDDeviceDriverControllerR;
-
-    if (ctx)
-        ohmd_ctx_destroy (ctx);
 }
 
 
 void CServerDriver_OpenHMD::RunFrame()
 {
-    ohmd_ctx_update(ctx);
-
     if ( m_OpenHMDDeviceDriver )
         m_OpenHMDDeviceDriver->RunFrame();
 
@@ -1688,3 +1519,4 @@ HMD_DLL_EXPORT void *HmdDriverFactory( const char *pInterfaceName, int *pReturnC
 
     return NULL;
 }
+
