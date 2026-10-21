@@ -1,4 +1,4 @@
-// Copyright 2013, Fredrik Hultin.
+﻿// Copyright 2013, Fredrik Hultin.
 // Copyright 2013, Jakob Bornecrantz.
 // SPDX-License-Identifier: BSL-1.0
 /*
@@ -7,11 +7,14 @@
 
 /* Sensor Fusion */
 
+#ifndef LGR100_FUSION_H
+#define LGR100_FUSION_H
 
-#ifndef FUSION_H
-#define FUSION_H
+#include "lgr100_omath.h"
 
-#include "omath.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define FF_USE_GRAVITY 1
 
@@ -41,5 +44,9 @@ typedef struct {
 
 void ofusion_init(fusion* me);
 void ofusion_update(fusion* me, float dt, const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
