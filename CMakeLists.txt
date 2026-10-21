@@ -9,9 +9,13 @@ set(CMAKE_C_STANDARD 99)
 file(COPY driver.vrdrivermanifest DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY resources DESTINATION ${CMAKE_BINARY_DIR})
 
-# hidapi: vendored inside the repo (third_party/hidapi), so the driver builds
-# with nothing else installed.
-set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hidapi")
+# hidapi: lives in the project's third_party, next to the other vendored
+# dependencies (the tools use ../../third_party/openvr the same way). A copy
+# inside the repo also works, so the driver can be built standalone.
+set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/hidapi")
+if(NOT EXISTS "${HIDAPI_ROOT}/include/hidapi.h")
+    set(HIDAPI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hidapi")
+endif()
 find_path(HIDAPI_INCLUDE_DIR hidapi.h PATHS "${HIDAPI_ROOT}/include" NO_DEFAULT_PATH)
 find_library(HIDAPI_LIBRARY hidapi PATHS "${HIDAPI_ROOT}/x64" NO_DEFAULT_PATH)
 if(NOT HIDAPI_INCLUDE_DIR OR NOT HIDAPI_LIBRARY)
